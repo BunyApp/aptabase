@@ -51,6 +51,9 @@ public class EventBody
     [Required]
     public string SessionId { get; set; } = "";
 
+    [Required]
+    public string UserId { get; set; } = "";
+
     public SystemProperties SystemProps { get; set; } = new();
     public JsonDocument? Props { get; set; }
 

@@ -31,17 +31,17 @@ export default defineConfig({
     },
     proxy: {
       "/uploads": {
-        target: "https://localhost:5251",
+        target: "http://localhost:8000",  // http not https
         changeOrigin: true,
         secure: false,
       },
       "/api": {
-        target: "https://localhost:5251",
+        target: "http://localhost:8000",
         changeOrigin: true,
         secure: false,
       },
       "/webhook": {
-        target: "https://localhost:5251",
+        target: "http://localhost:8000",
         changeOrigin: true,
         secure: false,
       },

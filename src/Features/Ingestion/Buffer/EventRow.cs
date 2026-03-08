@@ -37,7 +37,7 @@ public readonly struct EventRow
         AppId = e.IsDebug ? $"{e.AppId}_DEBUG" : e.AppId;
         Timestamp = e.Timestamp;
         EventName = e.EventName;
-        UserId = userId;
+        UserId = e.UserId;
         SessionId = e.SessionId;
         OSName = e.OSName;
         OSVersion = e.OSVersion;
