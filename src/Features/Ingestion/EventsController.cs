@@ -151,6 +151,7 @@ public class EventsController : Controller
             UserAgent = userAgent,
 
             AppId = appId,
+            UserId = body.UserId,
             EventName = body.EventName,
             Timestamp = body.Timestamp.ToUniversalTime(),
             SessionId = body.SessionId?.ToString() ?? "",
