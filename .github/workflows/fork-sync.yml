@@ -1,0 +1,193 @@
+name: Sync fork with upstream
+
+# Replays this fork's patch series onto aptabase/aptabase main, verifies it
+# still builds, and optionally force-pushes the result. See FORK.md.
+#
+# Pushing is opt-in: a production host tracks `changes`, so this never rewrites
+# the branch unless you explicitly ask it to.
+
+on:
+  workflow_dispatch:
+    inputs:
+      push:
+        description: "Force-push the rebased branch to origin (off = dry run)"
+        type: boolean
+        default: false
+  schedule:
+    # Mondays 06:00 UTC. Always a dry run; reports, never pushes.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+env:
+  FORK_BRANCH: changes
+  UPSTREAM_REPO: https://github.com/aptabase/aptabase.git
+
+jobs:
+  sync:
+    name: Rebase onto upstream
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FORK_BRANCH }}
+          # Full history: a rebase needs the merge base with upstream.
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config rerere.enabled true
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM_REPO" 2>/dev/null \
+            || git remote set-url upstream "$UPSTREAM_REPO"
+          git fetch upstream --prune
+
+      - name: Check whether a sync is needed
+        id: check
+        run: |
+          echo "before=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "Already up to date with upstream/main ($(git rev-parse --short upstream/main))." \
+              >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Incoming upstream commits"
+              echo '```'
+              git log --oneline HEAD..upstream/main
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Rebase fork patches onto upstream/main
+        id: rebase
+        if: steps.check.outputs.needed == 'true'
+        continue-on-error: true
+        run: git rebase upstream/main
+
+      - name: Report conflict and stop
+        if: steps.rebase.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Capture which patch stalled before unwinding the rebase.
+          conflicts="$(git diff --name-only --diff-filter=U || true)"
+          git rebase --abort || true
+
+          {
+            echo "Rebasing \`$FORK_BRANCH\` onto \`upstream/main\` hit a conflict."
+            echo "The branch was left untouched; resolve this locally:"
+            echo
+            echo '```sh'
+            echo "./scripts/fork-sync.sh"
+            echo '```'
+            echo
+            echo "Conflicting paths:"
+            echo '```'
+            echo "${conflicts:-(none reported)}"
+            echo '```'
+            echo
+            echo "Run: [\`${GITHUB_WORKFLOW}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+          } > conflict.md
+
+          cat conflict.md >> "$GITHUB_STEP_SUMMARY"
+
+          gh issue create \
+            --title "Fork sync conflict: $FORK_BRANCH onto upstream/main" \
+            --body-file conflict.md \
+            --label "fork-sync" 2>/dev/null \
+          || gh issue create \
+            --title "Fork sync conflict: $FORK_BRANCH onto upstream/main" \
+            --body-file conflict.md
+
+          exit 1
+
+      - name: Setup .NET 10
+        if: steps.check.outputs.needed == 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Setup Node 22
+        if: steps.check.outputs.needed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: src/package-lock.json
+
+      - name: Verify backend builds
+        if: steps.check.outputs.needed == 'true'
+        run: dotnet build src/Aptabase.csproj -c Release
+
+      - name: Verify frontend builds
+        if: steps.check.outputs.needed == 'true'
+        working-directory: src
+        run: |
+          # Deliberately stricter than the Dockerfile's `npm install`: npm ci
+          # fails if package.json and package-lock.json have drifted apart,
+          # which is the defect that motivated dropping the bun lockfile.
+          npm ci
+          npm run build
+
+      - name: Report fork surface
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          {
+            echo "### Fork patches after rebase"
+            echo '```'
+            git log --oneline upstream/main..HEAD
+            echo '```'
+            echo "### Fork surface vs upstream"
+            echo '```'
+            git diff upstream/main..HEAD --stat
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Push rebased branch
+        id: push
+        if: >-
+          steps.check.outputs.needed == 'true' &&
+          github.event_name == 'workflow_dispatch' &&
+          inputs.push
+        run: |
+          # Preserve the pre-rebase tip as a tag first. A force-push makes the
+          # old commits unreachable on the remote, and there is no reflog there.
+          backup="fork-sync-backup-$(date +%Y%m%d-%H%M%S)"
+          git tag "$backup" "${{ steps.check.outputs.before }}"
+          git push origin "refs/tags/$backup"
+
+          git push --force-with-lease origin "HEAD:refs/heads/$FORK_BRANCH"
+
+          {
+            echo "Pushed \`$FORK_BRANCH\` -> $(git rev-parse --short HEAD)"
+            echo
+            echo "Previous tip preserved as \`$backup\`."
+            echo
+            echo "The deploy host still needs updating - see FORK.md."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Note dry run
+        if: >-
+          steps.check.outputs.needed == 'true' &&
+          steps.push.outcome == 'skipped'
+        run: |
+          {
+            echo "### Dry run"
+            echo "The rebase succeeded and builds cleanly, but nothing was pushed."
+            echo "Re-run this workflow with **push** enabled to publish it."
+          } >> "$GITHUB_STEP_SUMMARY"
