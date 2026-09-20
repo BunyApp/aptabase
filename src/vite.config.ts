@@ -4,6 +4,10 @@ import mkcert from "vite-plugin-mkcert";
 import { defineConfig } from "vite";
 const pkg = require("./package.json");
 
+// Backend origin the dev server proxies to. Defaults to the upstream value;
+// override with APTABASE_API_TARGET when running the API elsewhere.
+const apiTarget = process.env.APTABASE_API_TARGET ?? "https://localhost:5251";
+
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react(), mkcert()],
@@ -31,17 +35,17 @@ export default defineConfig({
     },
     proxy: {
       "/uploads": {
-        target: "https://localhost:5251",
+        target: apiTarget,
         changeOrigin: true,
         secure: false,
       },
       "/api": {
-        target: "https://localhost:5251",
+        target: apiTarget,
         changeOrigin: true,
         secure: false,
       },
       "/webhook": {
-        target: "https://localhost:5251",
+        target: apiTarget,
         changeOrigin: true,
         secure: false,
       },
